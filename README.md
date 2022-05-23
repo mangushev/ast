@@ -29,6 +29,15 @@ Train:
 
 python training.py --action=TRAIN --output_dir=checkpoints --lookback_history=168 --estimate_length=24 --train_epochs=1000 --learning_rate=1e-4 --minimal_rate=1e-5 --decay_steps=50000 --warmup_steps=50000 --clip_gradients=-1.0 --hidden_size=128 --feedforward_size=128 --embedding_size=20 --discriminator_lambda=0.1 --num_attention_heads=4 --num_hidden_layers=2 --dropout_prob=0.1 --num_series=370 --training_set_size=321598 --train_file=data/train.tfrecords --test_file=data/test.tfrecords --predict_file=data/test.tfrecords --train_scaler_file=data/train_scaler.joblib --test_scaler_file=data/test_scaler.joblib --predict_scaler_file=data/test_scaler.joblib --batch_size=64
 
+Generator loss
+![output sample](samples/data_prep/data_prep_cell_2_output_0.png "Generator loss")
+
+Discriminator loss
+![output sample](samples/data_prep/data_prep_cell_4_output_0.png "Discriminator loss")
+
+Discriminator accuracy
+![output sample](samples/data_prep/data_prep_cell_5_output_0.png "Discriminator loss")
+
 Evaluate:
 
 python training.py --action=EVALUATE --output_dir=checkpoints --lookback_history=168 --estimate_length=24 --train_epochs=1000 --learning_rate=1e-4 --minimal_rate=1e-5 --decay_steps=50000 --warmup_steps=50000 --clip_gradients=-1.0 --hidden_size=128 --feedforward_size=128 --embedding_size=20 --discriminator_lambda=0.1 --num_attention_heads=4 --num_hidden_layers=2 --dropout_prob=0.1 --num_series=370 --training_set_size=321598 --train_file=data/train.tfrecords --test_file=data/test.tfrecords --predict_file=data/test.tfrecords --train_scaler_file=data/train_scaler.joblib --test_scaler_file=data/test_scaler.joblib --predict_scaler_file=data/test_scaler.joblib --batch_size=64; cat output.csv
@@ -41,11 +50,16 @@ Peformance:
 
 Adversarial with parameters as provided in samples:
 
+q50 during trainig:
+
+![output sample](samples/data_prep/data_prep/data_prep_cell_3_output_0.png "q50")
+
+Final Testing set:
+
 mae: 0.101003
 mbe: -0.036529
 mape: 25.351590
 smape: 4.871360
 mse: 0.046875
 rmse: 0.216505
-qloss: 0.102923
-
+q50: 0.102923
