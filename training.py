@@ -7,17 +7,13 @@ import time
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
 import tensorflow as tf
+import tensorflow_addons as tfa
 
 from model import Generator, Discriminator
-from utils import Scaler
 from evaluate import calculate_metrics
 
-#  activation_fn = tf.math.tanh
-#activation_fn = tf.nn.sigmoid
-#GENERATOR_ACTIVATION_FN = tf.nn.sigmoid
-#GENERATOR_ACTIVATION_FN = tf.nn.relu
-#GENERATOR_ACTIVATION_FN = tf.math.softplus
-GENERATOR_ACTIVATION_FN = None
+generator_attention = {'SOFTMAX': tf.nn.softmax, 'SPARSEMAX': tfa.activations.sparsemax}
+generator_activation = {'SIGMOID': tf.nn.sigmoid, 'RELU': tf.nn.relu, 'SOFTPLUS': tf.math.softplus, 'NONE': None}
 
 #tf.debugging.set_log_device_placement(True)
 
@@ -55,12 +51,12 @@ def metrics(actual, expense_estimate):
 
   tf.print ("actial/zeros: ", actual.shape[0]*actual.shape[1], actual.shape[0]*actual.shape[1]-np.count_nonzero(actual))
 
-  a_mask = np.ma.masked_equal(actual,0.0)
-  e = np.ma.masked_where(np.ma.getmask(a_mask), expense_estimate)
-  #e = e.filled(fill_value=0.1)
+  mask = np.ma.masked_equal(actual,0.0)
+  e = np.ma.masked_where(np.ma.getmask(mask), expense_estimate)
+  e = e.filled(fill_value=1)
   #e = e[e.mask == False]
-  a = np.ma.masked_where(np.ma.getmask(a_mask), actual)
-  #a = a.filled(fill_value=0.1)
+  a = np.ma.masked_where(np.ma.getmask(mask), actual)
+  a = a.filled(fill_value=1)
   #a = a[a.mask == False]
 
   #tf.print("what is a: ", a.data) 
@@ -69,7 +65,9 @@ def metrics(actual, expense_estimate):
 
   performance["mape"] = (np.mean(np.absolute((a - e) / a))) * 100
 
-  performance["smape"] = np.mean(np.absolute(actual - expense_estimate) / (np.absolute(actual) + np.absolute(expense_estimate))) * 100
+  #performance["smape"] = np.mean(np.absolute(actual - expense_estimate) / (np.absolute(actual) + np.absolute(expense_estimate))) * 100
+
+  performance["smape"] = np.mean(np.absolute(a - e) / (np.absolute(a) + np.absolute(e))) * 100
 
   performance["mse"] = np.mean(np.square(actual - expense_estimate))
   performance["rmse"] = np.sqrt(np.mean(np.square(actual - expense_estimate)))
@@ -100,8 +98,8 @@ def evaluate():
                 feedforward_size=FLAGS.feedforward_size,
 		num_hidden_layers=FLAGS.num_hidden_layers,
 		num_attention_heads=FLAGS.num_attention_heads,
-		activation_fn=GENERATOR_ACTIVATION_FN,
-		is_training=True)
+		activation_fn=generator_activation[FLAGS.generator_activation],
+		is_training=False)
 
   checkpoint_prefix = os.path.join(FLAGS.output_dir, "ckpt")
   checkpoint = tf.train.Checkpoint(generator=generator)
@@ -128,8 +126,8 @@ def evaluate():
     expense_estimate = np.concatenate((expense_estimate, estimate[:trans_batch["label"].numpy().shape[0],:,0].numpy()), axis=0)
     actual = np.concatenate((actual, trans_batch["label"][:,:,0].numpy()), axis=0)
 
-    #if expense_estimate.shape[0] > 31450:
-    if expense_estimate.shape[0] > 64:
+    if expense_estimate.shape[0] > 31450:
+    #if expense_estimate.shape[0] > 64:
       break
 
   performance = metrics(actual, expense_estimate)
@@ -152,12 +150,14 @@ def evaluate_discriminator():
   generator = Generator(FLAGS.batch_size, 
 		FLAGS.lookback_history,
 		FLAGS.estimate_length,
+		FLAGS.num_series,
 		FLAGS.num_covariates,
+                embedding_size=FLAGS.embedding_size,
 		hidden_size=FLAGS.hidden_size,
                 feedforward_size=FLAGS.feedforward_size,
 		num_hidden_layers=FLAGS.num_hidden_layers,
 		num_attention_heads=FLAGS.num_attention_heads,
-		activation_fn=GENERATOR_ACTIVATION_FN,
+		activation_fn=generator_activation[FLAGS.generator_activation],
 		is_training=False)
 
   discriminator = Discriminator(FLAGS.batch_size,
@@ -170,46 +170,35 @@ def evaluate_discriminator():
   checkpoint = tf.train.Checkpoint(generator=generator, discriminator=discriminator)
   status = checkpoint.restore(tf.train.latest_checkpoint(FLAGS.output_dir)).expect_partial()
 
-  expense_estimate = None
-  all_discriminate = None
+  all_fake = np.empty([0], dtype=np.float32)
+  all_real = np.empty([0], dtype=np.float32)
   for trans_batch in trans_dataset:
     condition = trans_batch["condition"]
-    covariates_label= trans_batch["label"]
+    covariates_label = trans_batch["label"]
 
     while condition.shape[0] != FLAGS.batch_size:
       condition = tf.concat([condition, tf.zeros_like(condition[:1, :, :])], axis=0)
       covariates_label = tf.concat([covariates_label, tf.zeros_like(covariates_label[:1, :, :])], axis=0)
 
-    #b, s, 1
-    a = tf.concat([condition[:, -1:, :1], covariates_label[:, :-1, :1]], axis=1)
-    #b, s, d
-    decoder_input = tf.concat([a, covariates_label[:, :, 1:]], axis=-1)
-
-    #estimate = generator(condition, covariates_label[:, :, 1:])
-    estimate = generator(condition, decoder_input)
-    #estimate = generator(condition, covariates_label[:, :, :])
+    estimate = generator(condition, covariates_label[:, :, 1:])
 
     discriminate_fake = discriminator(estimate[:, :, 0])
-    #discriminate_fake = discriminator(covariates_label[:, :, 0])
+    discriminate_real = discriminator(covariates_label[:, :, 0])
 
-    if trans_batch["condition"].numpy().shape[0] != FLAGS.batch_size:
-      estimate = estimate[:trans_batch["condition"].numpy().shape[0]]
-      discriminate_fake = discriminate_fake[:trans_batch["condition"].numpy().shape[0]]
+    all_fake = np.concatenate((all_fake, discriminate_fake[:trans_batch["condition"].numpy().shape[0]].numpy()), axis=0)
+    all_real = np.concatenate((all_real, discriminate_real[:trans_batch["condition"].numpy().shape[0]].numpy()), axis=0)
 
-    if expense_estimate is None:
-      expense_estimate = estimate[:, :1, 0].numpy()
-      all_discriminate = discriminate_fake.numpy()
-    else:
-      expense_estimate = np.concatenate((expense_estimate, estimate[:,:1,0].numpy()), axis=0)
-      all_discriminate = np.concatenate((all_discriminate, discriminate_fake.numpy()), axis=0)
+    performance = calculate_metrics(np.floor(np.concatenate((all_fake, all_real), axis=0)+0.5), np.concatenate((np.zeros_like(all_fake), np.ones_like(all_real)), axis=0))
 
-    performance = calculate_metrics(np.floor(all_discriminate+0.5), np.zeros_like(all_discriminate))
-    #performance = calculate_metrics(np.floor(all_discriminate+0.5), np.ones_like(all_discriminate))
+    #performance = calculate_metrics(np.floor(all_fake+0.5), np.zeros_like(all_fake))
+    performance = calculate_metrics(np.floor(all_real+0.5), np.ones_like(all_real))
 
-    if expense_estimate.shape[0] > 10:
+    #if all_fake.shape[0] > 31450:
+    if all_fake.shape[0] > 64:
       break
 
-  print ("discriminate: ", all_discriminate)
+  print ("all_fake: ", all_fake)
+  #print ("all_real: ", all_real)
 
   with tf.io.gfile.GFile(FLAGS.output_file, "w") as writer:
     for m, v in performance.items():
@@ -235,7 +224,7 @@ def predict():
                 feedforward_size=FLAGS.feedforward_size,
 		num_hidden_layers=FLAGS.num_hidden_layers,
 		num_attention_heads=FLAGS.num_attention_heads,
-		activation_fn=GENERATOR_ACTIVATION_FN,
+		activation_fn=generator_activation[FLAGS.generator_activation],
 		is_training=False)
 
   checkpoint_prefix = os.path.join(FLAGS.output_dir, "ckpt")
@@ -265,7 +254,6 @@ def predict():
     series = np.concatenate((series, trans_batch["label"][:,:1,-1].numpy()), axis=0)
     guid = np.concatenate((guid, np.expand_dims(trans_batch["guid"].numpy(), axis=-1)), axis=0)
 
-    #if expense_estimate.shape[0] > 10000:
     #if expense_estimate.shape[0] > 31450:
     if expense_estimate.shape[0] > 64:
       break
@@ -281,10 +269,11 @@ def predict():
       #writer.write("{:.2f} | {:.2f} \n".format(a, e))
       if a != 0.0:
         pct = pct + np.absolute((a - e) / a) * 100
-        n = n + 1
         writer.write("{:.2f} | {:.2f} {:.0f}\n".format(a, e, np.absolute((a - e) / a) * 100))
       else:
+        pct = pct + np.absolute(((a+0.1) - (e+0.1)) / (a+0.1)) * 100
         writer.write("{:.2f} | {:.2f} {}\n".format(a, e, '--'))
+      n = n + 1
   print ("mape: ", pct/n) 
 
 @tf.function
@@ -316,7 +305,11 @@ def train_loop(generator, discriminator, generator_optimizer, discriminator_opti
       generator_optimizer.apply_gradients(zip(generator_gradients, generator.variables))
 
       #it takes output sequense and returns true/false
-      discriminator_loss = tf.reduce_mean(-tf.math.log(discriminator(y_real)) - tf.math.log(1 - discriminator(tf.stop_gradient(y_fake)) +1e-15        ))
+
+      discriminator_fake = discriminator(tf.stop_gradient(y_fake))
+      discriminator_real = discriminator(y_real)
+
+      discriminator_loss = tf.reduce_mean(-tf.math.log(discriminator_real) - tf.math.log(1 - discriminator_fake +1e-15        ))
 
       discriminator_gradients = discriminator_tape.gradient(discriminator_loss, discriminator.variables)
       if (FLAGS.clip_gradients > 0):
@@ -328,9 +321,9 @@ def train_loop(generator, discriminator, generator_optimizer, discriminator_opti
 
       qloss = quantile_loss(y_real, y_fake)
 
-      tf.print("loss:", generator_optimizer.iterations, epoch, generator_loss, discriminator_loss, qloss, Lp, regularizer, generator_optimizer.lr(generator_optimizer.iterations), time.time() - start_time, output_stream=sys.stderr, summarize=-1)
+      discriminator_accuracy = calculate_metrics(tf.floor(tf.concat([discriminator_fake, discriminator_real], axis=0)+0.5), tf.concat([tf.zeros_like(discriminator_fake), tf.ones_like(discriminator_real)], axis=0))['accuracy']
 
-#      tf.print("loss:", generator_optimizer.iterations, epoch, generator_loss, 0, 0, 0, generator_optimizer.lr(generator_optimizer.iterations), output_stream=sys.stderr, summarize=-1)
+      tf.print("loss:", generator_optimizer.iterations, epoch, generator_loss, discriminator_loss, qloss, Lp, regularizer, discriminator_accuracy, generator_optimizer.lr(generator_optimizer.iterations), time.time() - start_time, output_stream=sys.stderr, summarize=-1)
 
       if generator_optimizer.iterations % FLAGS.save_batches == 0:
         #checkpoint.save(file_prefix=checkpoint_prefix)
@@ -391,7 +384,8 @@ def train():
 		feedforward_size=FLAGS.feedforward_size,
 		num_hidden_layers=FLAGS.num_hidden_layers,
 		num_attention_heads=FLAGS.num_attention_heads,
-		activation_fn=GENERATOR_ACTIVATION_FN,
+		attention_fn=generator_attention[FLAGS.generator_attention],
+		activation_fn=generator_activation[FLAGS.generator_activation],
 		dropout_prob=FLAGS.dropout_prob,
 		initializer_range=1.0,
 		is_training=True)
@@ -475,6 +469,10 @@ if __name__ == '__main__':
             help='Quantile value for loss calculation.')
   parser.add_argument('--discriminator_lambda', type=float, default=1.0,
             help='Hyperparameter to regularize generator loss.')
+  parser.add_argument('--generator_attention', default='SOFTMAX', choices=['SOFTMAX','SPARSEMAX'],
+            help='Used for transformer attentions.')
+  parser.add_argument('--generator_activation', default='NONE', choices=['SIGMOID','RELU','SOFTPLUS','NONE'],
+            help='To use any activation in generator output layer.')
   parser.add_argument('--learning_rate', type=float, default=1e-4,
             help='Optimizer initial learning rate.')
   parser.add_argument('--minimal_rate', type=float, default=5e-4,

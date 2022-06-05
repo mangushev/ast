@@ -50,6 +50,7 @@ class AttentionLayer(tf.Module):
 		num_attention_heads,
 		head_size,
 		attention_mask=None,
+		attention_fn=tf.nn.softmax,
 		activation_fn=None,
 		initializer_range=1.0):
     super(AttentionLayer, self).__init__()
@@ -60,6 +61,7 @@ class AttentionLayer(tf.Module):
     self.num_attention_heads = num_attention_heads
     self.head_size = head_size
     self.attention_mask = attention_mask
+    self.attention_fn = attention_fn
 
     self.query_layer = Dense(num_attention_heads * head_size,
 		num_attention_heads * head_size,
@@ -108,10 +110,10 @@ class AttentionLayer(tf.Module):
       attention_mask = -attention_mask * 10000
 
       #(b, h, t, f), (b, h, f, dh) --> (b, h, t, dh) 
-      output = tf.nn.softmax(output + attention_mask)
+      output = self.attention_fn(output + attention_mask)
       output = tf.matmul(output, V)
     else:
-      output = tf.matmul(tf.nn.softmax(output), V)
+      output = tf.matmul(self.attention_fn(output), V)
 
     #(b, h, t, dh) --> (b, t, h, dh))
     output = tf.transpose(output, [0, 2, 1, 3])
@@ -131,6 +133,7 @@ class EncoderLayer(tf.Module):
 		sequence_length,
 		num_attention_heads,
 		head_size,
+		attention_fn=tf.nn.softmax,
 		activation_fn=None,
 		feedforward_activation_fn=tf.nn.relu,
 		dropout_prob=0.1,
@@ -146,6 +149,7 @@ class EncoderLayer(tf.Module):
 		num_attention_heads,
 		head_size,
 		attention_mask=None,
+		attention_fn=attention_fn,
 		activation_fn=activation_fn,
 		initializer_range=initializer_range)
 
@@ -194,6 +198,7 @@ class DecoderLayer(tf.Module):
 		num_attention_heads,
 		head_size,
 		attention_mask,
+		attention_fn=tf.nn.softmax,
 		activation_fn=None,
 		feedforward_activation_fn=tf.nn.relu,
 		dropout_prob=0.1,
@@ -209,6 +214,7 @@ class DecoderLayer(tf.Module):
 		num_attention_heads,
 		head_size,
 		attention_mask=attention_mask,
+		attention_fn=attention_fn,
 		activation_fn=activation_fn,
 		initializer_range=initializer_range)
 
@@ -221,6 +227,7 @@ class DecoderLayer(tf.Module):
 		num_attention_heads,
 		head_size,
 		attention_mask=None,
+		attention_fn=attention_fn,
 		activation_fn=activation_fn,
 		initializer_range=initializer_range)
 
@@ -276,6 +283,7 @@ class Encoder(tf.Module):
 		num_layers,
 		num_attention_heads,
 		head_size,
+		attention_fn=tf.nn.softmax,
 		activation_fn=None,
 		feedforward_activation_fn=tf.nn.relu,
 		dropout_prob=0.1,
@@ -291,6 +299,7 @@ class Encoder(tf.Module):
 		sequence_length,
 		num_attention_heads,
 		head_size,
+		attention_fn,
 		activation_fn,
 		feedforward_activation_fn,
 		dropout_prob,
@@ -315,21 +324,15 @@ class Decoder(tf.Module):
 		num_attention_heads,
 		head_size,
 		masking=True,
+		attention_fn=tf.nn.softmax,
 		activation_fn=None,
 		feedforward_activation_fn=tf.nn.relu,
 		dropout_prob=0.1,
 		initializer_range=1.0):
     super(Decoder, self).__init__()
 
-    #tf.linalg.band_part(input, 0, -1) ==> Upper triangular part.
-    #tf.linalg.band_part(input, -1, 0) ==> Lower triangular part. to Zero
-    #1 is where  to mask
-
     if masking:
-      #attention_mask = tf.tile(tf.expand_dims(tf.concat([tf.ones([decoder_sequence_length, 1], dtype=tf.float32), tf.zeros([decoder_sequence_length, decoder_sequence_length-1], dtype=tf.float32)], axis=1), 0), [batch_size, 1, 1])
-      #attention_mask = tf.tile(tf.expand_dims(tf.linalg.band_part(tf.ones([decoder_sequence_length, decoder_sequence_length], dtype=tf.float32), -1, 0), 0), [batch_size, 1, 1])
-      #attention_mask = tf.tile(tf.expand_dims(tf.linalg.band_part(tf.ones([decoder_sequence_length, decoder_sequence_length], dtype=tf.float32), 0, -1), 0), [batch_size, 1, 1])
-      attention_mask = None
+      attention_mask = tf.tile(tf.expand_dims(tf.linalg.band_part(tf.ones([decoder_sequence_length, decoder_sequence_length], dtype=tf.float32), -1, 0), 0), [batch_size, 1, 1])
     else:
       attention_mask = None
     
@@ -344,6 +347,7 @@ class Decoder(tf.Module):
 		num_attention_heads,
 		head_size,
 		attention_mask,
+		attention_fn,
 		activation_fn,
 		feedforward_activation_fn,
 		dropout_prob,
@@ -367,6 +371,8 @@ class Transformer(tf.Module):
 		num_encoder_layers=2,
 		num_decoder_layers=2,
 		num_attention_heads=1,
+		decoder_masking=True,
+		attention_fn=tf.nn.softmax,
 		activation_fn=None,
 		feedforward_activation_fn=tf.nn.relu,
 		dropout_prob=0.1,
@@ -383,6 +389,7 @@ class Transformer(tf.Module):
 		num_encoder_layers,
 		num_attention_heads,
 		head_size,
+		attention_fn=attention_fn,
 		activation_fn=activation_fn,
 		feedforward_activation_fn=feedforward_activation_fn,
 		dropout_prob=dropout_prob,
@@ -396,7 +403,8 @@ class Transformer(tf.Module):
 		num_decoder_layers,
 		num_attention_heads,
 		head_size,
-		masking=True,
+		masking=decoder_masking,
+		attention_fn=attention_fn,
 		activation_fn=activation_fn,
 		feedforward_activation_fn=feedforward_activation_fn,
 		dropout_prob=dropout_prob,
@@ -449,6 +457,7 @@ class Generator(tf.Module):
 		feedforward_size,
 		num_hidden_layers=2,
 		num_attention_heads=2,
+		attention_fn=tf.nn.softmax,
 		activation_fn=tf.nn.relu,
 		dropout_prob=0.1,
 		initializer_range=1.0,
@@ -503,6 +512,8 @@ class Generator(tf.Module):
 		num_encoder_layers=num_hidden_layers,
 		num_decoder_layers=num_hidden_layers,
 		num_attention_heads=num_attention_heads,
+		decoder_masking=False,
+		attention_fn=attention_fn,
 		activation_fn=None,
 		feedforward_activation_fn=tf.nn.relu,
 		dropout_prob=dropout_prob,
